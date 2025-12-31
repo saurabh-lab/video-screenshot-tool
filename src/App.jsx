@@ -195,6 +195,17 @@ export default function VideoScreenshotTool() {
 
   return (
     <div className="p-6 bg-slate-900 text-white min-h-screen">
+      {/* Header */}
+      <div className="mb-6">
+        <h1 className="text-3xl font-bold">
+          AI UI Flow Screenshot Generator
+        </h1>
+        <p className="text-slate-400 mt-1 max-w-2xl">
+          Automatically detects meaningful UI state changes from product demo videos
+          and generates clean, timestamped screenshots for flows and documentation.
+        </p>
+      </div>
+
       <input ref={fileInputRef} type="file" accept="video/*" hidden onChange={handleVideoUpload} />
 
       {!videoUrl && (
@@ -235,6 +246,11 @@ export default function VideoScreenshotTool() {
       )}
 
       <canvas ref={canvasRef} hidden />
+      {/* Footer Disclaimer */}
+      <p className="text-xs text-slate-500 mt-8 border-t border-slate-700 pt-3 max-w-3xl">
+        ⚠️ All processing happens locally in your browser. Videos are never uploaded
+        or stored on any server. Performance depends on your device capabilities.
+      </p>
     </div>
   );
 }
