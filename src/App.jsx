@@ -7,6 +7,7 @@ export default function VideoScreenshotTool() {
   const [videoUrl, setVideoUrl] = useState(null);
   const [videoLoaded, setVideoLoaded] = useState(false);
   const [screenshots, setScreenshots] = useState([]);
+  const [flows, setFlows] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [processingStatus, setProcessingStatus] = useState('');
@@ -15,6 +16,10 @@ export default function VideoScreenshotTool() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  /* -------------------- Config -------------------- */
+
+  const FLOW_GAP_SECONDS = 8;
 
   /* -------------------- Upload -------------------- */
 
@@ -30,6 +35,7 @@ export default function VideoScreenshotTool() {
     setIsUploading(true);
     setVideoLoaded(false);
     setScreenshots([]);
+    setFlows([]);
     setProcessingStatus('');
     setProgress(0);
 
@@ -56,7 +62,7 @@ export default function VideoScreenshotTool() {
         resolve();
       };
       video.addEventListener('seeked', finish);
-      setTimeout(finish, 250); // safety fallback
+      setTimeout(finish, 250);
     });
 
   const toGrayscale = (img) => {
@@ -86,7 +92,38 @@ export default function VideoScreenshotTool() {
   };
 
   const formatTime = (s) =>
-    `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
+    `${Math.floor(s / 60)}:${Math.floor(s % 60)
+      .toString()
+      .padStart(2, '0')}`;
+
+  /* -------------------- Flow Grouping -------------------- */
+
+  const groupIntoFlows = (shots) => {
+    const grouped = [];
+    let currentFlow = null;
+
+    shots.forEach((shot) => {
+      if (
+        !currentFlow ||
+        shot.timestamp - currentFlow.lastTimestamp > FLOW_GAP_SECONDS
+      ) {
+        currentFlow = {
+          id: grouped.length + 1,
+          name: `Flow ${grouped.length + 1}`,
+          startTime: shot.timestamp,
+          lastTimestamp: shot.timestamp,
+          steps: []
+        };
+        grouped.push(currentFlow);
+      }
+
+      shot.flowId = currentFlow.id;
+      currentFlow.steps.push(shot);
+      currentFlow.lastTimestamp = shot.timestamp;
+    });
+
+    return grouped;
+  };
 
   /* -------------------- Processing -------------------- */
 
@@ -96,13 +133,13 @@ export default function VideoScreenshotTool() {
 
     setIsProcessing(true);
     setScreenshots([]);
+    setFlows([]);
     setProcessingStatus('Analyzing UI changes…');
     setProgress(0);
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-    // 🔥 Downscale for UI stability
     const SCALE = 0.25;
     canvas.width = video.videoWidth * SCALE;
     canvas.height = video.videoHeight * SCALE;
@@ -116,6 +153,7 @@ export default function VideoScreenshotTool() {
     let lastFrame = null;
     let lastCaptureTs = -10;
     let changeBurst = false;
+    let idCounter = 1;
 
     for (let i = 0; i < timestamps.length; i++) {
       const ts = timestamps[i];
@@ -127,15 +165,24 @@ export default function VideoScreenshotTool() {
       const gray = toGrayscale(frame);
 
       let capture = false;
+      let reason = 'unknown';
       let diff = 0;
 
       if (!lastFrame) {
         capture = true;
+        reason = 'initial';
       } else {
         diff = uiDiff(lastFrame, gray);
-        if (diff > 6) capture = true;                // navigation
-        if (diff > 3 && !changeBurst) capture = true; // burst start
-        if (diff < 2 && changeBurst) capture = true;  // burst end
+        if (diff > 6) {
+          capture = true;
+          reason = 'navigation';
+        } else if (diff > 3 && !changeBurst) {
+          capture = true;
+          reason = 'burst-start';
+        } else if (diff < 2 && changeBurst) {
+          capture = true;
+          reason = 'burst-end';
+        }
       }
 
       if (diff > 3) changeBurst = true;
@@ -143,9 +190,12 @@ export default function VideoScreenshotTool() {
 
       if (capture && ts - lastCaptureTs > 0.3) {
         captured.push({
+          id: idCounter++,
           timestamp: ts,
           formattedTime: formatTime(ts),
-          dataUrl: exportFullFrame(video)
+          dataUrl: exportFullFrame(video),
+          reason,
+          flowId: null
         });
         lastFrame = gray;
         lastCaptureTs = ts;
@@ -154,8 +204,13 @@ export default function VideoScreenshotTool() {
       setProgress(Math.round((i / timestamps.length) * 100));
     }
 
+    const groupedFlows = groupIntoFlows(captured);
+
     setScreenshots(captured);
-    setProcessingStatus(`✓ Captured ${captured.length} UI screens`);
+    setFlows(groupedFlows);
+    setProcessingStatus(
+      `✓ Captured ${captured.length} UI screens in ${groupedFlows.length} flows`
+    );
     setIsProcessing(false);
     video.currentTime = 0;
   };
@@ -168,7 +223,7 @@ export default function VideoScreenshotTool() {
 
     screenshots.forEach((shot, i) => {
       folder.file(
-        `shot_${String(i + 1).padStart(3, '0')}_${shot.formattedTime.replace(':', '-')}.jpg`,
+        `flow_${shot.flowId}_step_${String(i + 1).padStart(3, '0')}_${shot.formattedTime.replace(':', '-')}.jpg`,
         shot.dataUrl.split(',')[1],
         { base64: true }
       );
@@ -186,7 +241,7 @@ export default function VideoScreenshotTool() {
         <h1 className="text-3xl font-bold">AI UI Flow Screenshot Generator</h1>
         <p className="text-slate-400 mt-1">
           Automatically captures meaningful UI state changes from demo videos
-          to generate clean, timestamped screenshots for flows and documentation.
+          to generate clean, timestamped screenshots.
         </p>
       </div>
 
@@ -244,7 +299,7 @@ export default function VideoScreenshotTool() {
               </div>
               <div className="w-full h-2 bg-slate-700 rounded overflow-hidden">
                 <div
-                  className="h-full bg-blue-500 transition-all duration-200"
+                  className="h-full bg-blue-500 transition-all"
                   style={{ width: `${progress}%` }}
                 />
               </div>
@@ -255,7 +310,7 @@ export default function VideoScreenshotTool() {
             <p className="mt-3 text-green-400">{processingStatus}</p>
           )}
 
-          {/* Screenshot Preview Grid */}
+          {/* Screenshot Preview Grid (RESTORED) */}
           {screenshots.length > 0 && (
             <div className="mt-8">
               <h2 className="text-lg font-semibold mb-3">
@@ -267,9 +322,13 @@ export default function VideoScreenshotTool() {
                     key={idx}
                     className="bg-slate-800 border border-slate-700 rounded overflow-hidden"
                   >
-                    <img src={shot.dataUrl} alt="" className="w-full object-contain" />
+                    <img
+                      src={shot.dataUrl}
+                      alt=""
+                      className="w-full object-contain"
+                    />
                     <div className="text-xs text-slate-400 px-2 py-1 text-center bg-slate-900">
-                      {shot.formattedTime}
+                      {shot.formattedTime} · Flow {shot.flowId}
                     </div>
                   </div>
                 ))}
@@ -284,7 +343,7 @@ export default function VideoScreenshotTool() {
       {/* Footer */}
       <p className="text-xs text-slate-500 mt-8 border-t border-slate-700 pt-3 max-w-3xl">
         Processing happens entirely in your browser. Videos are never uploaded
-        or stored on any server. Performance depends on your device.
+        or stored on any server.
       </p>
     </div>
   );
