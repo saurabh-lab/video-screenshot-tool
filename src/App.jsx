@@ -226,9 +226,13 @@ export default function VideoScreenshotTool() {
 
           {isProcessing && (
             <div className="mt-4 max-w-xl">
-              <div className="w-full h-2 bg-slate-700 rounded">
+              <div className="flex justify-between text-xs text-slate-400 mb-1">
+                <span>Analyzing UI frames</span>
+                <span>{progress}%</span>
+              </div>
+              <div className="w-full h-2 bg-slate-700 rounded overflow-hidden">
                 <div
-                  className="h-full bg-blue-500"
+                  className="h-full bg-blue-500 transition-all duration-200"
                   style={{ width: `${progress}%` }}
                 />
               </div>
