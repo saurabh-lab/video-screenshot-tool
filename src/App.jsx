@@ -3,87 +3,62 @@ import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 
 export default function VideoScreenshotTool() {
-  const [videoFile, setVideoFile] = useState(null);
   const [videoUrl, setVideoUrl] = useState(null);
   const [videoLoaded, setVideoLoaded] = useState(false);
-  const [screenshots, setScreenshots] = useState([]);
   const [flows, setFlows] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  const [processingStatus, setProcessingStatus] = useState('');
   const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState('');
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  /* -------------------- Config -------------------- */
+  /* ---------------- Upload ---------------- */
 
-  const FLOW_GAP_SECONDS = 8;
-
-  /* -------------------- Upload -------------------- */
-
-  const handleVideoUpload = (e) => {
+  const handleUpload = (e) => {
     const file = e.target.files[0];
-    if (!file || !file.type.startsWith('video/')) {
-      alert('Please upload a valid video file');
-      return;
-    }
-
+    if (!file || !file.type.startsWith('video/')) return;
     if (videoUrl) URL.revokeObjectURL(videoUrl);
 
-    setIsUploading(true);
-    setVideoLoaded(false);
-    setScreenshots([]);
     setFlows([]);
-    setProcessingStatus('');
     setProgress(0);
+    setStatus('');
+    setVideoLoaded(false);
 
-    setVideoFile(file);
     setVideoUrl(URL.createObjectURL(file));
   };
 
-  /* -------------------- Video Load -------------------- */
-
-  const handleVideoLoaded = () => {
-    setVideoLoaded(true);
-    setIsUploading(false);
-  };
-
-  /* -------------------- Helpers -------------------- */
+  /* ---------------- Helpers ---------------- */
 
   const waitForSeek = (video) =>
-    new Promise((resolve) => {
-      let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
-        video.removeEventListener('seeked', finish);
-        resolve();
+    new Promise((res) => {
+      const done = () => {
+        video.removeEventListener('seeked', done);
+        res();
       };
-      video.addEventListener('seeked', finish);
-      setTimeout(finish, 250);
+      video.addEventListener('seeked', done);
+      setTimeout(done, 200);
     });
 
-  const toGrayscale = (img) => {
+  const toGray = (img) => {
     const d = img.data;
-    const gray = new Uint8ClampedArray(d.length / 4);
+    const g = new Uint8ClampedArray(d.length / 4);
     for (let i = 0, j = 0; i < d.length; i += 4, j++) {
-      gray[j] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      g[j] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
     }
-    return gray;
+    return g;
   };
 
-  const uiDiff = (a, b) => {
+  const diffScore = (a, b) => {
     let diff = 0;
-    const STEP = 20;
-    for (let i = 0; i < a.length; i += STEP) {
+    for (let i = 0; i < a.length; i += 20) {
       diff += Math.abs(a[i] - b[i]);
     }
-    return diff / (a.length / STEP);
+    return diff / (a.length / 20);
   };
 
-  const exportFullFrame = (video) => {
+  const exportFrame = (video) => {
     const c = document.createElement('canvas');
     c.width = video.videoWidth;
     c.height = video.videoHeight;
@@ -91,50 +66,20 @@ export default function VideoScreenshotTool() {
     return c.toDataURL('image/jpeg', 0.92);
   };
 
-  const formatTime = (s) =>
+  const fmt = (s) =>
     `${Math.floor(s / 60)}:${Math.floor(s % 60)
       .toString()
       .padStart(2, '0')}`;
 
-  /* -------------------- Flow Grouping -------------------- */
-
-  const groupIntoFlows = (shots) => {
-    const grouped = [];
-    let currentFlow = null;
-
-    shots.forEach((shot) => {
-      if (
-        !currentFlow ||
-        shot.timestamp - currentFlow.lastTimestamp > FLOW_GAP_SECONDS
-      ) {
-        currentFlow = {
-          id: grouped.length + 1,
-          name: `Flow ${grouped.length + 1}`,
-          startTime: shot.timestamp,
-          lastTimestamp: shot.timestamp,
-          steps: []
-        };
-        grouped.push(currentFlow);
-      }
-
-      shot.flowId = currentFlow.id;
-      currentFlow.steps.push(shot);
-      currentFlow.lastTimestamp = shot.timestamp;
-    });
-
-    return grouped;
-  };
-
-  /* -------------------- Processing -------------------- */
+  /* ---------------- Processing ---------------- */
 
   const processVideo = async () => {
     const video = videoRef.current;
     if (!video || !videoLoaded) return;
 
     setIsProcessing(true);
-    setScreenshots([]);
+    setStatus('Analyzing UI changes…');
     setFlows([]);
-    setProcessingStatus('Analyzing UI changes…');
     setProgress(0);
 
     const canvas = canvasRef.current;
@@ -144,16 +89,13 @@ export default function VideoScreenshotTool() {
     canvas.width = video.videoWidth * SCALE;
     canvas.height = video.videoHeight * SCALE;
 
-    const duration = video.duration;
-    const STEP = 0.4;
     const timestamps = [];
-    for (let t = 0; t < duration; t += STEP) timestamps.push(t);
+    for (let t = 0; t < video.duration; t += 0.4) timestamps.push(t);
 
-    const captured = [];
     let lastFrame = null;
     let lastCaptureTs = -10;
-    let changeBurst = false;
-    let idCounter = 1;
+    let currentFlow = { id: 1, screens: [] };
+    const allFlows = [];
 
     for (let i = 0; i < timestamps.length; i++) {
       const ts = timestamps[i];
@@ -162,40 +104,29 @@ export default function VideoScreenshotTool() {
 
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const gray = toGrayscale(frame);
+      const gray = toGray(frame);
 
       let capture = false;
-      let reason = 'unknown';
       let diff = 0;
 
       if (!lastFrame) {
         capture = true;
-        reason = 'initial';
       } else {
-        diff = uiDiff(lastFrame, gray);
+        diff = diffScore(lastFrame, gray);
         if (diff > 6) {
+          allFlows.push(currentFlow);
+          currentFlow = { id: currentFlow.id + 1, screens: [] };
           capture = true;
-          reason = 'navigation';
-        } else if (diff > 3 && !changeBurst) {
+        } else if (diff > 3) {
           capture = true;
-          reason = 'burst-start';
-        } else if (diff < 2 && changeBurst) {
-          capture = true;
-          reason = 'burst-end';
         }
       }
 
-      if (diff > 3) changeBurst = true;
-      if (diff < 2) changeBurst = false;
-
       if (capture && ts - lastCaptureTs > 0.3) {
-        captured.push({
-          id: idCounter++,
+        currentFlow.screens.push({
           timestamp: ts,
-          formattedTime: formatTime(ts),
-          dataUrl: exportFullFrame(video),
-          reason,
-          flowId: null
+          formattedTime: fmt(ts),
+          dataUrl: exportFrame(video)
         });
         lastFrame = gray;
         lastCaptureTs = ts;
@@ -204,53 +135,58 @@ export default function VideoScreenshotTool() {
       setProgress(Math.round((i / timestamps.length) * 100));
     }
 
-    const groupedFlows = groupIntoFlows(captured);
+    if (currentFlow.screens.length) allFlows.push(currentFlow);
 
-    setScreenshots(captured);
-    setFlows(groupedFlows);
-    setProcessingStatus(
-      `✓ Captured ${captured.length} UI screens in ${groupedFlows.length} flows`
-    );
+    setFlows(allFlows);
+    setStatus(`✓ ${allFlows.length} flows captured`);
     setIsProcessing(false);
     video.currentTime = 0;
   };
 
-  /* -------------------- ZIP Download -------------------- */
+  /* ---------------- ZIP Export ---------------- */
 
-  const downloadAsZip = async () => {
+  const downloadZip = async () => {
     const zip = new JSZip();
-    const folder = zip.folder('screenshots');
 
-    screenshots.forEach((shot, i) => {
-      folder.file(
-        `flow_${shot.flowId}_step_${String(i + 1).padStart(3, '0')}_${shot.formattedTime.replace(':', '-')}.jpg`,
-        shot.dataUrl.split(',')[1],
-        { base64: true }
-      );
+    flows.forEach((flow) => {
+      const folder = zip.folder(`flow_${flow.id}`);
+      flow.screens.forEach((s, i) => {
+        folder.file(
+          `step_${i + 1}_${s.formattedTime.replace(':', '-')}.jpg`,
+          s.dataUrl.split(',')[1],
+          { base64: true }
+        );
+      });
     });
 
-    saveAs(await zip.generateAsync({ type: 'blob' }), 'video_screenshots.zip');
+    saveAs(await zip.generateAsync({ type: 'blob' }), 'ui_flows.zip');
   };
 
-  /* -------------------- UI -------------------- */
+  /* ---------------- UI ---------------- */
 
   return (
     <div className="p-6 bg-slate-900 text-white min-h-screen">
-      {/* Header */}
-      <div className="mb-6 max-w-3xl">
-        <h1 className="text-3xl font-bold">AI UI Flow Screenshot Generator</h1>
-        <p className="text-slate-400 mt-1">
-          Automatically captures meaningful UI state changes from demo videos
-          to generate clean, timestamped screenshots.
-        </p>
-      </div>
+      <h1 className="text-3xl font-bold">AI UI Flow Screenshot Generator</h1>
+      <p className="text-slate-400 max-w-3xl mt-1">
+        Automatically capture meaningful UI state changes from demo videos.
+      </p>
 
-      <input ref={fileInputRef} type="file" accept="video/*" hidden onChange={handleVideoUpload} />
+      <p className="text-xs text-slate-500 mt-2">
+        Processing happens locally in your browser. Videos are not uploaded.
+      </p>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="video/*"
+        hidden
+        onChange={handleUpload}
+      />
 
       {!videoUrl && (
         <button
           onClick={() => fileInputRef.current.click()}
-          className="p-4 border-2 border-dashed rounded"
+          className="mt-6 p-4 border-2 border-dashed rounded"
         >
           Upload Video
         </button>
@@ -262,11 +198,9 @@ export default function VideoScreenshotTool() {
             ref={videoRef}
             src={videoUrl}
             controls
-            preload="metadata"
             muted
-            playsInline
-            onLoadedMetadata={handleVideoLoaded}
             className="w-full mt-4"
+            onLoadedMetadata={() => setVideoLoaded(true)}
           />
 
           {videoLoaded && (
@@ -276,12 +210,12 @@ export default function VideoScreenshotTool() {
                 disabled={isProcessing}
                 className="px-4 py-2 bg-blue-600 rounded"
               >
-                {isProcessing ? 'Processing…' : 'Capture Screenshots'}
+                Capture Screenshots
               </button>
 
-              {screenshots.length > 0 && (
+              {flows.length > 0 && (
                 <button
-                  onClick={downloadAsZip}
+                  onClick={downloadZip}
                   className="px-4 py-2 bg-green-600 rounded"
                 >
                   Download ZIP
@@ -290,61 +224,41 @@ export default function VideoScreenshotTool() {
             </div>
           )}
 
-          {/* Progress Bar */}
           {isProcessing && (
             <div className="mt-4 max-w-xl">
-              <div className="flex justify-between text-xs text-slate-400 mb-1">
-                <span>Analyzing UI frames</span>
-                <span>{progress}%</span>
-              </div>
-              <div className="w-full h-2 bg-slate-700 rounded overflow-hidden">
+              <div className="w-full h-2 bg-slate-700 rounded">
                 <div
-                  className="h-full bg-blue-500 transition-all"
+                  className="h-full bg-blue-500"
                   style={{ width: `${progress}%` }}
                 />
               </div>
             </div>
           )}
 
-          {processingStatus && (
-            <p className="mt-3 text-green-400">{processingStatus}</p>
-          )}
+          {status && <p className="mt-3 text-green-400">{status}</p>}
 
-          {/* Screenshot Preview Grid (RESTORED) */}
-          {screenshots.length > 0 && (
-            <div className="mt-8">
+          {/* FLOW VIEW */}
+          {flows.map((flow) => (
+            <div key={flow.id} className="mt-8">
               <h2 className="text-lg font-semibold mb-3">
-                Captured Screens ({screenshots.length})
+                Flow {flow.id} ({flow.screens.length} screens)
               </h2>
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                {screenshots.map((shot, idx) => (
-                  <div
-                    key={idx}
-                    className="bg-slate-800 border border-slate-700 rounded overflow-hidden"
-                  >
-                    <img
-                      src={shot.dataUrl}
-                      alt=""
-                      className="w-full object-contain"
-                    />
-                    <div className="text-xs text-slate-400 px-2 py-1 text-center bg-slate-900">
-                      {shot.formattedTime} · Flow {shot.flowId}
+                {flow.screens.map((s, i) => (
+                  <div key={i} className="bg-slate-800 rounded">
+                    <img src={s.dataUrl} alt="" />
+                    <div className="text-xs text-center text-slate-400 p-1">
+                      {s.formattedTime}
                     </div>
                   </div>
                 ))}
               </div>
             </div>
-          )}
+          ))}
         </>
       )}
 
       <canvas ref={canvasRef} hidden />
-
-      {/* Footer */}
-      <p className="text-xs text-slate-500 mt-8 border-t border-slate-700 pt-3 max-w-3xl">
-        Processing happens entirely in your browser. Videos are never uploaded
-        or stored on any server.
-      </p>
     </div>
   );
 }
